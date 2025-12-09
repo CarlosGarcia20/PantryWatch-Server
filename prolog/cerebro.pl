@@ -26,17 +26,29 @@ iniciar_sistema :-
     sincronizar_datos.
 
 sincronizar_datos :-
-    write('📥 Descargando datos de PostgreSQL...'), nl,
-    % Limpieza de memoria
+   write('📥 Descargando datos de la Base de datos...'), nl,
+    
+    % Limpieza
     retractall(producto(_,_,_,_)),
     retractall(stock_minimo(_,_)),
     retractall(condicion_ideal(_,_,_)),
     retractall(estante_actual(_,_,_)),
 
     % Query SQL
-    odbc_query(pantry_conn, 
-               'SELECT codigo_prolog, nombre, peso_unitario, stock_minimo, peso_actual, temp_max, humedad_max FROM productos', 
-               row(ID, Nombre, PesoUnit, StockMin, PesoActual, TMax, HMax)),
+    odbc_query(pantry_conn,
+        'SELECT 
+            id_producto, 
+            nombre, 
+            peso_unitario, 
+            stock_minimo, 
+            peso_actual, 
+            temp_max, 
+            humedad_max 
+        FROM productos', 
+        
+        % 2. Ahora sí, 7 columnas SQL = 7 variables Prolog
+        row(ID, Nombre, PesoUnit, StockMin, PesoActual, TMax, HMax)
+    ),
     
     % Guardar en RAM
     assertz(producto(ID, Nombre, PesoUnit, 0)), 
