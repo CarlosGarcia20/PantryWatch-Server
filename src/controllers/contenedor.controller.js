@@ -13,9 +13,10 @@ export class contenedorController {
             const result = await contenedorModel.crear({
                 nombre: req.body.nombre,
                 peso: req.body.peso,
+                capacidadGr: req.body.capacidad_gr,
                 imagen: urlImagen
             });
-
+            
             if (!result.success) {
                 return res.status(500).json({ mensaje: "Ocurrió un error al crear el contenedor" });
             }
@@ -56,7 +57,6 @@ export class contenedorController {
                 imagen: nuevaImagen || null,
                 capacidad_gr: req.body.capacidad_gr || null
             });
-            console.log(result);
             
             if (!result.success) {
                 return res.status(500).json({ 
@@ -95,6 +95,30 @@ export class contenedorController {
             return res.sendStatus(204);
         } catch (error) {
             return res.status(500).json({ mensaje: "Error Interno del Servidor" });
+        }
+    }
+
+    static async registrarNuevoBote(req, res) {
+        try {
+            const { peso, zona } = req.body;
+
+            console.log(`🆕 Nuevo Bote Detectado en ${zona}: ${peso}g`);
+
+            if (req.io) {
+                req.io.emit('nuevo_bote_detectado', { 
+                    peso_detectado: peso,
+                    zona: zona
+                });
+            }
+
+            res.status(200).json({ 
+                status: "EXITO",
+                mensaje: "Recipiente registrado",
+                accion: "LED_VERDE"
+            });
+        } catch (error) {
+            console.error(error);
+            res.status(500).json({ error: "Error al registrar bote" });
         }
     }
 }
