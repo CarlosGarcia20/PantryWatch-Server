@@ -1,6 +1,7 @@
 import { Router } from "express";
 import multer from "multer";
 import { contenedorController } from "../controllers/contenedor.controller.js";
+import { chefController } from "../controllers/chef.controller.js";
 
 const upload = multer({ dest: 'uploads/' });
 
@@ -12,3 +13,5 @@ contenedorRouter.put('/:contenedorId', upload.single('imagen'), contenedorContro
 contenedorRouter.delete('/:contenedorId', contenedorController.eliminarContenedor)
 
 contenedorRouter.post('/recipientes', contenedorController.registrarNuevoBote);
+
+contenedorRouter.get('/chef', chefController.sugerirReceta);
