@@ -11,25 +11,17 @@ export class sensorController {
 
             console.log(`📥 API: Recibido de ${zona} -> T:${temperatura} H:${humedad} P:${peso_actual}`);
 
-            // if (req.io) {
-            //     req.io.emit('actualizacion_sensores', {
-            //         zona: zona,
-            //         temperatura: temperatura,
-            //         humedad: humedad,
-            //         peso: peso_actual,
-            //         timestamp: new Date()
-            //     });
-            //     console.log("📡 Datos enviados a la App Móvil vía Socket");
-            // } else {
-            //     console.warn("⚠️ No se encontró instancia de Socket.io (req.io)");
-            // }
-
-            // Llamamos al servicio (Caja negra)
             const alertas = await prologService.procesarDatosSensor(zona, temperatura, humedad);
 
-            if (alertas.length > 0) {
-                console.log("   🔥 Respondiendo ALERTA al ESP32");
-                return res.status(200).json({ status: "ALERTA", data: alertas });
+            if (alertas && alertas.length > 0) {
+                console.log(`🔥 Enviando ${alertas.length} alertas al Socket`);
+
+                req.io.emit('alerta_pantry', { 
+                    titulo: "⚠️ Atención en Alacena",
+                    cuerpo: `Se detectaron ${alertas.length} problemas en ${zona}`,
+                    // 3. Enviamos el array directo
+                    detalles: alertas 
+                });
             }
 
             return res.status(200).json({ status: "OK", data: [] });
