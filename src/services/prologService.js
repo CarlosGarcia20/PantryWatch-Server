@@ -48,9 +48,6 @@ class PrologService {
         }
         await query.close();
         
-        // 3. Consultar Faltantes (Opcional, si quieres alertar de stock también)
-        // ... logica extra ...
-
         return alertas;
     }
 }
