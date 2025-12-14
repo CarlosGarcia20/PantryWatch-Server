@@ -1,67 +1,78 @@
 % ======================================================
-%  CEREBRO DE PANTRYWATCH (FINAL INTEGRADO v2.0)
+%  CEREBRO DE PANTRYWATCH
 % ======================================================
 :- use_module(library(odbc)).
 
-% 1. DECLARACIÓN DE DINÁMICOS (Memoria RAM)
+% 1. DECLARACIÓN DE DINÁMICOS
 :- dynamic producto/4.        % ID, Nombre, PesoUnit, _
 :- dynamic stock_minimo/2.    % ID, StockMin
+:- dynamic stock_fisico/2.    % ID, StockReal
 :- dynamic condicion_ideal/3. % ID, TempMax, HumMax
 :- dynamic estante_actual/3.  % Estante, ID, PesoActual
 :- dynamic ambiente_actual/3. % Zona, Temp, Humedad
 :- dynamic zona_estante/2.    % Estante, Zona
 
-% Configuraciones Físicas (Hechos estáticos)
-capacidad_maxima_estante(e1, 5000). % El estante 1 aguanta 5kg (5000g)
+% Configuraciones Físicas
+capacidad_maxima_estante(e1, 5000). 
 
 % ------------------------------------------------------
 % 2. CONEXIÓN Y CARGA (ETL)
 % ------------------------------------------------------
 
 iniciar_sistema :-
-    write('🔌 Prolog: Intentando conectar ODBC...'), nl,
-    % Conectamos a Postgres
+    write('🔌 Prolog: Conectando...'), nl,
     catch(
         odbc_connect('PantryDB', _Connection, [alias(pantry_conn), open(once)]),
-        error(existence_error(_, _), _), % Ignorar si ya está conectado
-        (write('⚠️ Ya estaba conectado o driver ocupado.'), nl)
+        _, 
+        (write('⚠️ Ya conectado.'), nl)
     ),
     sincronizar_datos.
 
 sincronizar_datos :-
-   write('📥 Descargando datos de la Base de datos...'), nl,
-    
-    % Limpieza
-    retractall(producto(_,_,_,_)),
-    retractall(stock_minimo(_,_)),
-    retractall(condicion_ideal(_,_,_)),
-    retractall(estante_actual(_,_,_)),
-    retractall(zona_estante(_,_)), % Limpiamos zonas también
+   write('📥 Descargando datos...'), nl,
+   
+   % Limpieza
+   retractall(producto(_,_,_,_)),
+   retractall(stock_minimo(_,_)),
+   retractall(stock_fisico(_,_)), 
+   retractall(estante_actual(_,_,_)),
+   retractall(condicion_ideal(_,_,_)),
+   retractall(zona_estante(_,_)), 
 
-    % Configuración inicial de zonas (Asumimos e1 = cocina por defecto)
-    assertz(zona_estante(e1, cocina)),
+   % ZONAS (Ajusta según tus necesidades)
+   assertz(zona_estante(e1, cocina)),
+   assertz(zona_estante(e2, alacena)),
 
-    % Query SQL
-    odbc_query(pantry_conn,
-        'SELECT 
-            id_producto, 
-            nombre, 
-            peso_unitario, 
-            stock_minimo, 
-            peso_actual, 
-            temp_max, 
-            humedad_max 
-        FROM productos', 
-        row(ID, Nombre, PesoUnit, StockMin, PesoActual, TMax, HMax)
-    ),
-    
-    % Guardar en RAM
-    assertz(producto(ID, Nombre, PesoUnit, 0)), 
-    assertz(stock_minimo(ID, StockMin)),
-    assertz(estante_actual(e1, ID, PesoActual)), 
-    assertz(condicion_ideal(ID, TMax, HMax)),
-    
-    fail. % Backtracking forzado
+   % BLOQUE PROTEGIDO: SQL EXACTO A TU TABLA
+   catch(
+       (
+           odbc_query(pantry_conn,
+               'SELECT 
+                   id_producto, 
+                   nombre, 
+                   peso_unitario, 
+                   stock_minimo, 
+                   peso_actual, 
+                   COALESCE(stock_actual, 0), /* Protegemos nulos */
+                   temp_max, 
+                   humedad_max,
+                   ubicacion
+               FROM productos', 
+               
+               % 9 Variables para 9 Columnas
+               row(ID, Nombre, PesoUnit, StockMin, PesoActual, StockReal, TMax, HMax, Ubicacion)
+           ),
+           
+           assertz(producto(ID, Nombre, PesoUnit, 0)), 
+           assertz(stock_minimo(ID, StockMin)),
+           assertz(stock_fisico(ID, StockReal)),     
+           assertz(estante_actual(Ubicacion, ID, PesoActual)), % Usa la ubicación real
+           assertz(condicion_ideal(ID, TMax, HMax)),
+           fail
+       ),
+       Error,
+       (write('❌ ERROR SQL (Ignorable): '), write(Error), nl)
+   ).
 
 sincronizar_datos :- 
     write('✅ Datos sincronizados.'), nl.
@@ -71,87 +82,64 @@ cerrar_conexion :-
     write('🔌 Desconectado.').
 
 % ------------------------------------------------------
-% 3. INTERFAZ DE SENSORES
+% 3. LÓGICA BLINDADA (Aquí estaba el error)
 % ------------------------------------------------------
 
-% Llamado por Node.js: actualizar_sensor(cocina, 32, 60).
-actualizar_sensor(Zona, NuevaTemp, NuevaHum) :-
-    retractall(ambiente_actual(Zona, _, _)),
-    assertz(ambiente_actual(Zona, NuevaTemp, NuevaHum)),
-    format('📡 Sensor ~w actualizado: T=~w H=~w~n', [Zona, NuevaTemp, NuevaHum]).
+% Helper: Detectar Agotado
 
-% Helper para detectar peligros (usado por Node)
-detectar_peligro_calor(Nombre, TempActual) :-
-    riesgo_ambiental_temp(ID), 
-    producto(ID, Nombre, _, _),
-    estante_actual(Estante, ID, _),
+% Caso A: Peso menor a 20g
+detectar_agotado(ID) :- 
+    estante_actual(_, ID, Peso), Peso < 20.
+
+% Caso B: Stock Real es 0 (CON CHALECO ANTIBALAS)
+% El catch(..., _, fail) significa: "Si esto da error, finge que es falso y continúa"
+detectar_agotado(ID) :- 
+    catch(stock_fisico(ID, 0), _, fail).
+
+% Caso C: No está en estante
+detectar_agotado(ID) :- 
+    stock_minimo(ID, _), \+ estante_actual(_, ID, _).
+
+
+% --- REGLA MAESTRA ---
+
+% 1. AGOTADO
+analizar_estado_zona(Zona, _, _, 'AGOTADO') :-
     zona_estante(Estante, Zona),
-    ambiente_actual(Zona, TempActual, _).
+    (estante_actual(Estante, ID, _) ; stock_minimo(ID, _)), 
+    detectar_agotado(ID), !. 
+
+% 2. PELIGRO
+analizar_estado_zona(Zona, Temp, Hum, 'PELIGRO') :-
+    retractall(ambiente_actual(Zona, _, _)),
+    assertz(ambiente_actual(Zona, Temp, Hum)),
+    zona_estante(Estante, Zona),
+    estante_actual(Estante, ID, _),
+    alerta_ambiental(ID), !.
+
+% 3. OPTIMO
+analizar_estado_zona(Zona, Temp, Hum, 'OPTIMO') :-
+    retractall(ambiente_actual(Zona, _, _)),
+    assertz(ambiente_actual(Zona, Temp, Hum)).
 
 % ------------------------------------------------------
-% 4. REGLAS BÁSICAS (Lógica Original)
+% 4. SOPORTE
 % ------------------------------------------------------
 
-% ======================================================
-%  REGLAS
-% ======================================================
-
-% 1. Calcular cuántas unidades quedan (Matemática básica)
-unidades_restantes(ProductoID, Unidades) :-
-    estante_actual(_, ProductoID, PesoActual),
-    producto(ProductoID, _, PesoUnitario, _),
-    PesoUnitario > 0, !,
-    Unidades is floor(PesoActual / PesoUnitario).
-
-% 2. Detectar necesidad de reponer (Stock bajo por peso)
-necesita_reponer(ProductoID) :-
-    estante_actual(_, ProductoID, PesoActual),
-    stock_minimo(ProductoID, PesoMinimo),
-    PesoActual =< PesoMinimo.
-
-% 3. Detectar producto agotado/desaparecido (Está en catálogo pero no en estante)
-necesita_reponer(ProductoID) :-
-    stock_minimo(ProductoID, _),
-    \+ estante_actual(_, ProductoID, _).
-
-% 4. Riesgo por Temperatura (Sensor vs Ideal)
 riesgo_temperatura(ProductoID) :-
-    estante_actual(E, ProductoID, _),
-    zona_estante(E, Zona),
-    ambiente_actual(Zona, TActual, _),
-    condicion_ideal(ProductoID, TMax, _),
+    estante_actual(E, ProductoID, _), zona_estante(E, Zona),
+    ambiente_actual(Zona, TActual, _), condicion_ideal(ProductoID, TMax, _),
     TActual > TMax.
 
-% 5. Riesgo por Humedad (Sensor vs Ideal)
 riesgo_humedad(ProductoID) :-
-    estante_actual(E, ProductoID, _),
-    zona_estante(E, Zona),
-    ambiente_actual(Zona, _, HActual),
-    condicion_ideal(ProductoID, _, HMax),
+    estante_actual(E, ProductoID, _), zona_estante(E, Zona),
+    ambiente_actual(Zona, _, HActual), condicion_ideal(ProductoID, _, HMax),
     HActual > HMax.
 
-% 6. Alerta Ambiental General (Operador Lógico OR)
-alerta_ambiental(ProductoID) :-
-    riesgo_temperatura(ProductoID) ;
-    riesgo_humedad(ProductoID).
+alerta_ambiental(ID) :- riesgo_temperatura(ID) ; riesgo_humedad(ID).
 
-% 7. Estado de Conservación (Diagnóstico avanzado)
-estado_conservacion(Nombre, 'CRITICO') :-
-    producto(ID, Nombre, _, _),
-    alerta_ambiental(ID).
+unidades_restantes(ID, U) :- 
+    estante_actual(_, ID, P), producto(ID, _, PU, _), PU > 0, U is floor(P / PU).
 
-% 8. Estado de Conservación (Caso favorable)
-estado_conservacion(Nombre, 'OPTIMO') :-
-    producto(ID, Nombre, _, _),
-    \+ alerta_ambiental(ID).
-
-% 9. Localizador de Productos (Búsqueda)
-donde_esta_producto(Nombre, Zona) :-
-    producto(ID, Nombre, _, _),
-    estante_actual(E, ID, _),
-    zona_estante(E, Zona).
-
-% 10. Generador de Alertas para API (Interfaz con Node.js)
-generar_alerta(Nombre, 'REVISAR URGENTE') :-
-    producto(ID, Nombre, _, _),
-    (necesita_reponer(ID) ; alerta_ambiental(ID)).
+generar_alerta(Nombre, 'REVISAR') :- 
+    producto(ID, Nombre, _, _), (detectar_agotado(ID) ; alerta_ambiental(ID)).

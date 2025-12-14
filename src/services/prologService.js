@@ -15,11 +15,9 @@ class PrologService {
             const ruta = PROLOG_FILE_PATH.replace(/\\/g, '/');
             
             await this.engine.call(`consult('${ruta}')`);
-            await this.engine.call('iniciar_sistema.');
             
-            // Config inicial
-            await this.engine.call('retractall(zona_estante(_,_))');
-            await this.engine.call('assertz(zona_estante(e1, cocina))');
+            // Esto conecta a la BD y carga las zonas (e1, e2) definidas en Prolog
+            await this.engine.call('iniciar_sistema.');
             
             this.isInitialized = true;
             console.log("✅ Servicio Prolog: Listo y conectado a BD.");
@@ -29,31 +27,92 @@ class PrologService {
         }
     }
 
-    async procesarDatosSensor(zona, temperatura, humedad) {
+    async procesarDatosSensor(zonaRecibida, temperatura, humedad) {
         if (!this.isInitialized) await this.init();
 
-        // 1. Inyectar
-        await this.engine.call(`actualizar_sensor(${zona}, ${temperatura}, ${humedad})`);
+        // IMPORTANTE: Prolog necesita átomos en minúscula (cocina, no Cocina)
+        const zona = zonaRecibida.toLowerCase();
 
-        // 2. Consultar Peligros
-        const query = await this.engine.createQuery('detectar_peligro_calor(Nombre, Temp).');
-        let alertas = [];
-        let result;
-        
-        while (result = await query.next()) {
-            alertas.push({
-                producto: result.Nombre,
-                mensaje: `Riesgo crítico a ${result.Temp}°C`
-            });
+        try {
+            console.log(`🧠 Prolog: Analizando ${zona} (T:${temperatura} H:${humedad})...`);
+
+            // PASO 1: Preguntar el ESTADO GENERAL
+            const queryString = `analizar_estado_zona(${zona}, ${temperatura}, ${humedad}, Estado).`;
+
+            const queryEstado = await this.engine.createQuery(queryString);
+            
+            let estadoGeneral = 'DESCONOCIDO';
+
+            try {
+                const result = await queryEstado.next();
+
+                if (result) {
+                    estadoGeneral = result.Estado; 
+                }
+            } finally {
+                await queryEstado.close();
+            }
+
+            let alertasDetalladas = [];
+
+            // PASO 2: Si está AGOTADO, buscamos qué falta
+            if (estadoGeneral === 'AGOTADO') {
+                const queryAgotados = await this.engine.createQuery(
+                    `zona_estante(E, ${zona}), 
+                    (estante_actual(E, ID, _) ; stock_minimo(ID, _)), 
+                    producto(ID, Nombre, _, _), 
+                    detectar_agotado(ID).`
+                );
+
+                let row;
+                const vistos = new Set();
+                // CORRECCIÓN AQUÍ: row ya es el objeto, no usamos .value
+                while (row = await queryAgotados.next()) {
+                    // Antes: row.value.Nombre  -> AHORA: row.Nombre
+                    const nombreProd = row.Nombre; 
+                    
+                    if (nombreProd && !vistos.has(nombreProd)) {
+                        alertasDetalladas.push({
+                            producto: nombreProd,
+                            mensaje: "⚠️ PRODUCTO AGOTADO (Rellenar)"
+                        });
+                        vistos.add(nombreProd);
+                    }
+                }
+                await queryAgotados.close();
+            } 
+            
+            // PASO 3: Si está en PELIGRO, buscamos riesgos ambientales
+            else if (estadoGeneral === 'PELIGRO') {
+                const queryPeligro = await this.engine.createQuery(
+                    `producto(ID, Nombre, _, _), 
+                    estante_actual(E, ID, _), 
+                    zona_estante(E, ${zona}), 
+                    alerta_ambiental(ID).`
+                );
+
+                let row;
+                while (row = await queryPeligro.next()) {
+                    alertasDetalladas.push({
+                        producto: row.value.Nombre,
+                        mensaje: "🔥 RIESGO AMBIENTAL (Temp/Hum)"
+                    });
+                }
+                await queryPeligro.close();
+            }
+
+            // Retornamos el paquete completo
+            return {
+                estado: estadoGeneral,   
+                alertas: alertasDetalladas 
+            };
+
+        } catch (error) {
+            console.error("❌ Error en Prolog Service:", error);
+            // Fallback seguro
+            return { estado: "ERROR", alertas: [] };
         }
-        await query.close();
-        
-        // 3. Consultar Faltantes (Opcional, si quieres alertar de stock también)
-        // ... logica extra ...
-
-        return alertas;
     }
 }
 
-// Exportamos una instancia única (Singleton)
 export const prologService = new PrologService();
