@@ -12,6 +12,6 @@ contenedorRouter.post('/', upload.single('imagen'), contenedorController.crear)
 contenedorRouter.put('/:contenedorId', upload.single('imagen'), contenedorController.editarContenedor);
 contenedorRouter.delete('/:contenedorId', contenedorController.eliminarContenedor)
 
-contenedorRouter.post('/recipientes', contenedorController.registrarNuevoBote);
+// contenedorRouter.post('/recipientes', contenedorController.registrarNuevoBote);
 
 contenedorRouter.get('/chef', chefController.sugerirReceta);

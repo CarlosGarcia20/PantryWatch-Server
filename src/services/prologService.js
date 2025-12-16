@@ -27,36 +27,36 @@ class PrologService {
         }
     }
 
-    async procesarDatosSensor(zonaRecibida, temperatura, humedad) {
+   async procesarDatosSensor(zonaRecibida, temperatura, humedad, peso_actual) {
         if (!this.isInitialized) await this.init();
 
-        // IMPORTANTE: Prolog necesita átomos en minúscula (cocina, no Cocina)
         const zona = zonaRecibida.toLowerCase();
 
         try {
-            console.log(`🧠 Prolog: Analizando ${zona} (T:${temperatura} H:${humedad})...`);
+            console.log(`🧠 Prolog: Analizando ${zona} (T:${temperatura} H:${humedad} P:${peso_actual})...`);
 
-            // PASO 1: Preguntar el ESTADO GENERAL
-            const queryString = `analizar_estado_zona(${zona}, ${temperatura}, ${humedad}, Estado).`;
-
+            const queryString = `analizar_estado_zona(${zona}, ${temperatura}, ${humedad}, ${peso_actual}, Estado).`;
             const queryEstado = await this.engine.createQuery(queryString);
             
             let estadoGeneral = 'DESCONOCIDO';
 
             try {
                 const result = await queryEstado.next();
-
-                if (result) {
-                    estadoGeneral = result.Estado; 
-                }
+                if (result) estadoGeneral = result.Estado; 
             } finally {
                 await queryEstado.close();
             }
 
             let alertasDetalladas = [];
 
-            // PASO 2: Si está AGOTADO, buscamos qué falta
-            if (estadoGeneral === 'AGOTADO') {
+            if (estadoGeneral === 'COLAPSO') {
+                alertasDetalladas.push({
+                    producto: "ESTRUCTURA ALACENA",
+                    mensaje: "🚨 PELIGRO DE DERRUMBE: Exceso de peso detectado"
+                });
+            }
+
+            else if (estadoGeneral === 'AGOTADO') {
                 const queryAgotados = await this.engine.createQuery(
                     `zona_estante(E, ${zona}), 
                     (estante_actual(E, ID, _) ; stock_minimo(ID, _)), 
@@ -66,42 +66,42 @@ class PrologService {
 
                 let row;
                 const vistos = new Set();
-                // CORRECCIÓN AQUÍ: row ya es el objeto, no usamos .value
                 while (row = await queryAgotados.next()) {
-                    // Antes: row.value.Nombre  -> AHORA: row.Nombre
                     const nombreProd = row.Nombre; 
-                    
                     if (nombreProd && !vistos.has(nombreProd)) {
                         alertasDetalladas.push({
                             producto: nombreProd,
-                            mensaje: "⚠️ PRODUCTO AGOTADO (Rellenar)"
+                            mensaje: "⚠️ STOCK BAJO / AGOTADO"
                         });
                         vistos.add(nombreProd);
                     }
                 }
                 await queryAgotados.close();
             } 
-            
-            // PASO 3: Si está en PELIGRO, buscamos riesgos ambientales
+
             else if (estadoGeneral === 'PELIGRO') {
                 const queryPeligro = await this.engine.createQuery(
                     `producto(ID, Nombre, _, _), 
                     estante_actual(E, ID, _), 
                     zona_estante(E, ${zona}), 
-                    alerta_ambiental(ID).`
+                    obtener_detalle_alerta(ID, Mensaje).` 
                 );
 
                 let row;
                 while (row = await queryPeligro.next()) {
-                    alertasDetalladas.push({
-                        producto: row.value.Nombre,
-                        mensaje: "🔥 RIESGO AMBIENTAL (Temp/Hum)"
-                    });
+                    const nombreProd = row.Nombre;
+                    const mensajeError = row.Mensaje;
+
+                    if (nombreProd) {
+                        alertasDetalladas.push({
+                            producto: nombreProd,
+                            mensaje: mensajeError || "🔥 RIESGO AMBIENTAL"
+                        });
+                    }
                 }
                 await queryPeligro.close();
             }
 
-            // Retornamos el paquete completo
             return {
                 estado: estadoGeneral,   
                 alertas: alertasDetalladas 
@@ -109,8 +109,23 @@ class PrologService {
 
         } catch (error) {
             console.error("❌ Error en Prolog Service:", error);
-            // Fallback seguro
             return { estado: "ERROR", alertas: [] };
+        }
+    }
+
+    async recargarConocimiento() {
+        if (!this.isInitialized) await this.init();
+
+        try {
+            console.log("🔄 Prolog: Ejecutando Hot Reload (ETL)...");
+
+            await this.engine.call('sincronizar_datos.');
+            
+            console.log("✅ Prolog: Conocimiento actualizado exitosamente.");
+            return true;
+        } catch (error) {
+            console.error("❌ Error en Hot Reload:", error);
+            return false;
         }
     }
 }

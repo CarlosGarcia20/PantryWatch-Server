@@ -98,27 +98,27 @@ export class contenedorController {
         }
     }
 
-    static async registrarNuevoBote(req, res) {
-        try {
-            const { peso, zona } = req.body;
+    // static async registrarNuevoBote(req, res) {
+    //     try {
+    //         const { peso, zona } = req.body;
 
-            console.log(`🆕 Nuevo Bote Detectado en ${zona}: ${peso}g`);
+    //         console.log(`🆕 Nuevo Bote Detectado en ${zona}: ${peso}g`);
 
-            if (req.io) {
-                req.io.emit('nuevo_bote_detectado', { 
-                    peso_detectado: peso,
-                    zona: zona
-                });
-            }
+    //         if (req.io) {
+    //             req.io.emit('nuevo_bote_detectado', { 
+    //                 peso_detectado: peso,
+    //                 zona: zona
+    //             });
+    //         }
 
-            res.status(200).json({ 
-                status: "EXITO",
-                mensaje: "Recipiente registrado",
-                accion: "LED_VERDE"
-            });
-        } catch (error) {
-            console.error(error);
-            res.status(500).json({ error: "Error al registrar bote" });
-        }
-    }
+    //         res.status(200).json({ 
+    //             status: "EXITO",
+    //             mensaje: "Recipiente registrado",
+    //             accion: "LED_VERDE"
+    //         });
+    //     } catch (error) {
+    //         console.error(error);
+    //         res.status(500).json({ error: "Error al registrar bote" });
+    //     }
+    // }
 }

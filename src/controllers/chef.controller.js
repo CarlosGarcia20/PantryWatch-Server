@@ -43,6 +43,8 @@ export class chefController {
                 receta: textoReceta 
             });
         } catch (error) {
+            console.log(error);
+            
             res.status(500).json({
                 error: "Error Interno del Servidor" 
             });

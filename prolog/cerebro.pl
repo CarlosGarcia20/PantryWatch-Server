@@ -4,19 +4,17 @@
 :- use_module(library(odbc)).
 
 % 1. DECLARACIÓN DE DINÁMICOS
-:- dynamic producto/4.        % ID, Nombre, PesoUnit, _
+:- dynamic producto/4.        % ID, Nombre, _Ignorado, _Ignorado
 :- dynamic stock_minimo/2.    % ID, StockMin
 :- dynamic stock_fisico/2.    % ID, StockReal
 :- dynamic condicion_ideal/3. % ID, TempMax, HumMax
-:- dynamic estante_actual/3.  % Estante, ID, PesoActual
+:- dynamic estante_actual/3.  % Estante, ID, _Ignorado
 :- dynamic ambiente_actual/3. % Zona, Temp, Humedad
 :- dynamic zona_estante/2.    % Estante, Zona
-
-% Configuraciones Físicas
-capacidad_maxima_estante(e1, 5000). 
+:- dynamic capacidad_estante/2. % ID_Zona, CapacidadMax
 
 % ------------------------------------------------------
-% 2. CONEXIÓN Y CARGA (ETL)
+% 2. CONEXIÓN Y CARGA
 % ------------------------------------------------------
 
 iniciar_sistema :-
@@ -29,117 +27,129 @@ iniciar_sistema :-
     sincronizar_datos.
 
 sincronizar_datos :-
-   write('📥 Descargando datos...'), nl,
+   write('📥 Sincronizando Base de Conocimiento...'), nl,
    
-   % Limpieza
+   % 1. Limpieza de memoria (Esto hace que funcione el Hot Reload)
    retractall(producto(_,_,_,_)),
    retractall(stock_minimo(_,_)),
    retractall(stock_fisico(_,_)), 
    retractall(estante_actual(_,_,_)),
    retractall(condicion_ideal(_,_,_)),
    retractall(zona_estante(_,_)), 
+   retractall(capacidad_estante(_,_)),
 
-   % ZONAS (Ajusta según tus necesidades)
+   % 2. Configuración Lógica
    assertz(zona_estante(e1, cocina)),
-   assertz(zona_estante(e2, alacena)),
 
-   % BLOQUE PROTEGIDO: SQL EXACTO A TU TABLA
+   % 3. Carga Estante (Por Nombre)
+   catch(
+       (
+           odbc_query(pantry_conn, 'SELECT peso_maximo FROM contenedores WHERE nombre = ''Estante 1''', row(Cap)), 
+           assertz(capacidad_estante(e1, Cap))
+       ),
+       _, 
+       (write('⚠️ Usando default estante.'), assertz(capacidad_estante(e1, 5000)))
+   ),
+
+   % 4. Carga Productos (Casteando ID a String para evitar errores)
    catch(
        (
            odbc_query(pantry_conn,
-               'SELECT 
-                   id_producto, 
-                   nombre, 
-                   peso_unitario, 
-                   stock_minimo, 
-                   peso_actual, 
-                   COALESCE(stock_actual, 0), /* Protegemos nulos */
-                   temp_max, 
-                   humedad_max,
-                   ubicacion
-               FROM productos', 
-               
-               % 9 Variables para 9 Columnas
-               row(ID, Nombre, PesoUnit, StockMin, PesoActual, StockReal, TMax, HMax, Ubicacion)
+               'SELECT CAST(id_producto AS VARCHAR), nombre, stock_minimo, COALESCE(stock_actual, 0), temp_max, humedad_max, ubicacion FROM productos', 
+               row(ID_Str, Nombre, StockMin, StockReal, TMax, HMax, UbicacionRaw)
            ),
-           
-           assertz(producto(ID, Nombre, PesoUnit, 0)), 
+           atom_string(ID, ID_Str),
+           (atom(UbicacionRaw) -> Ubicacion = UbicacionRaw ; atom_string(Ubicacion, UbicacionRaw)),
+
+           assertz(producto(ID, Nombre, 0, 0)),
            assertz(stock_minimo(ID, StockMin)),
-           assertz(stock_fisico(ID, StockReal)),     
-           assertz(estante_actual(Ubicacion, ID, PesoActual)), % Usa la ubicación real
+           assertz(stock_fisico(ID, StockReal)),
+           assertz(estante_actual(Ubicacion, ID, 0)),
            assertz(condicion_ideal(ID, TMax, HMax)),
            fail
        ),
-       Error,
-       (write('❌ ERROR SQL (Ignorable): '), write(Error), nl)
-   ).
-
-sincronizar_datos :- 
-    write('✅ Datos sincronizados.'), nl.
+       _, true
+   ),
+   write('✅ IA: Conocimiento actualizado.'), nl.
 
 cerrar_conexion :- 
     catch(odbc_disconnect(pantry_conn), _, true),
     write('🔌 Desconectado.').
 
 % ------------------------------------------------------
-% 3. LÓGICA BLINDADA (Aquí estaba el error)
+% 3. REGLAS DE DIAGNÓSTICO (SIMPLIFICADAS)
 % ------------------------------------------------------
 
-% Helper: Detectar Agotado
+% A. DETECTAR AGOTADO (Solo lógica de Stock)
 
-% Caso A: Peso menor a 20g
-detectar_agotado(ID) :- 
-    estante_actual(_, ID, Peso), Peso < 20.
-
-% Caso B: Stock Real es 0 (CON CHALECO ANTIBALAS)
-% El catch(..., _, fail) significa: "Si esto da error, finge que es falso y continúa"
+% Caso 1: Stock Real es 0 (Agotado total)
 detectar_agotado(ID) :- 
     catch(stock_fisico(ID, 0), _, fail).
 
-% Caso C: No está en estante
+% Caso 2: Stock Real es menor al Mínimo (Stock Bajo)
+detectar_agotado(ID) :-
+    stock_fisico(ID, StockReal),
+    stock_minimo(ID, StockMin),
+    StockReal < StockMin.
+
+% Caso 3: Respaldo (Si el producto existe en BD pero no está asignado a estante)
 detectar_agotado(ID) :- 
     stock_minimo(ID, _), \+ estante_actual(_, ID, _).
 
 
-% --- REGLA MAESTRA ---
+% B. DIAGNÓSTICO CLIMÁTICO (Las 8 Reglas)
+diagnostico_climatico(ID, 'PELIGRO: Calor Excesivo') :-
+    datos_ambiente(ID, T, _), condicion_ideal(ID, TMax, _), T > TMax.
 
-% 1. AGOTADO
-analizar_estado_zona(Zona, _, _, 'AGOTADO') :-
+diagnostico_climatico(ID, 'PELIGRO: Humedad Alta (Riesgo Moho)') :-
+    datos_ambiente(ID, _, H), condicion_ideal(ID, _, HMax), H > HMax.
+
+diagnostico_climatico(ID, 'CRITICO: Ambiente Sofocante (Calor+Humedad)') :-
+    datos_ambiente(ID, T, H), condicion_ideal(ID, TMax, HMax), T > TMax, H > HMax.
+
+diagnostico_climatico(ID, 'ADVERTENCIA: Temperatura subiendo') :-
+    datos_ambiente(ID, T, _), condicion_ideal(ID, TMax, _),
+    Lim is TMax - 3, T > Lim, T =< TMax.
+
+diagnostico_climatico(ID, 'RIESGO: Chocolate derritiendose') :-
+    producto(ID, Nombre, _, _), sub_atom(Nombre, _, _, _, 'Chocolate'),
+    datos_ambiente(ID, T, _), T > 24.
+
+% Helper de ambiente
+datos_ambiente(ID, T, H) :-
+    estante_actual(E, ID, _), zona_estante(E, Zona), ambiente_actual(Zona, T, H).
+
+
+% ------------------------------------------------------
+% 4. REGLA MAESTRA DE ESTADOS (PRIORIDADES)
+% ------------------------------------------------------
+
+% PRIORIDAD 0: COLAPSO ESTRUCTURAL
+analizar_estado_zona(Zona, _, _, PesoTotalSensor, 'COLAPSO') :-
+    zona_estante(Estante, Zona),          
+    capacidad_estante(Estante, CapacidadMax), 
+    PesoTotalSensor > CapacidadMax, !.
+
+% PRIORIDAD 1: AGOTADO
+analizar_estado_zona(Zona, _, _, _, 'AGOTADO') :-
     zona_estante(Estante, Zona),
     (estante_actual(Estante, ID, _) ; stock_minimo(ID, _)), 
     detectar_agotado(ID), !. 
 
-% 2. PELIGRO
-analizar_estado_zona(Zona, Temp, Hum, 'PELIGRO') :-
+% PRIORIDAD 2: PELIGRO AMBIENTAL
+analizar_estado_zona(Zona, Temp, Hum, _, 'PELIGRO') :-
     retractall(ambiente_actual(Zona, _, _)),
     assertz(ambiente_actual(Zona, Temp, Hum)),
     zona_estante(Estante, Zona),
     estante_actual(Estante, ID, _),
-    alerta_ambiental(ID), !.
+    diagnostico_climatico(ID, _), !.
 
-% 3. OPTIMO
-analizar_estado_zona(Zona, Temp, Hum, 'OPTIMO') :-
+% PRIORIDAD 3: OPTIMO
+analizar_estado_zona(Zona, Temp, Hum, _, 'OPTIMO') :-
     retractall(ambiente_actual(Zona, _, _)),
     assertz(ambiente_actual(Zona, Temp, Hum)).
 
 % ------------------------------------------------------
-% 4. SOPORTE
+% 5. INTERFAZ NODE.JS
 % ------------------------------------------------------
-
-riesgo_temperatura(ProductoID) :-
-    estante_actual(E, ProductoID, _), zona_estante(E, Zona),
-    ambiente_actual(Zona, TActual, _), condicion_ideal(ProductoID, TMax, _),
-    TActual > TMax.
-
-riesgo_humedad(ProductoID) :-
-    estante_actual(E, ProductoID, _), zona_estante(E, Zona),
-    ambiente_actual(Zona, _, HActual), condicion_ideal(ProductoID, _, HMax),
-    HActual > HMax.
-
-alerta_ambiental(ID) :- riesgo_temperatura(ID) ; riesgo_humedad(ID).
-
-unidades_restantes(ID, U) :- 
-    estante_actual(_, ID, P), producto(ID, _, PU, _), PU > 0, U is floor(P / PU).
-
-generar_alerta(Nombre, 'REVISAR') :- 
-    producto(ID, Nombre, _, _), (detectar_agotado(ID) ; alerta_ambiental(ID)).
+obtener_detalle_alerta(ID, Mensaje) :- diagnostico_climatico(ID, Mensaje).

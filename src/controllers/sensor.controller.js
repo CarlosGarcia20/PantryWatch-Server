@@ -5,27 +5,36 @@ export class sensorController {
         try {
             const { zona, temperatura, humedad, peso_actual } = req.body;
 
-            if (!zona || temperatura === undefined || humedad === undefined) {
+            if (!zona || temperatura === undefined) {
                 return res.status(400).json({ error: "Faltan datos" });
             }
 
-            console.log(`📥 API: Recibido de ${zona} -> T:${temperatura} H:${humedad}`);
+            console.log(`📥 API: Recibido de ${zona} -> T:${temperatura} H:${humedad} P:${peso_actual}`);
 
-            const alertas = await prologService.procesarDatosSensor(zona, temperatura, humedad);
+            const resultado = await prologService.procesarDatosSensor(zona, temperatura, humedad, peso_actual);
+            console.log(resultado);
+            
+            const listaAlertas = resultado.alertas;
 
-            if (alertas && alertas.length > 0) {
-                console.log(`🔥 Enviando ${alertas.length} alertas al Socket`);
-
+            if (listaAlertas && listaAlertas.length > 0) {
                 req.io.emit('alerta_pantry', { 
-                    titulo: "⚠️ Atención en Alacena",
-                    cuerpo: `Se detectaron ${alertas.length} problemas en ${zona}`,
-                    // 3. Enviamos el array directo
-                    detalles: alertas 
+                    titulo: `⚠️ Atención: Estado ${resultado.estado}`,
+                    cuerpo: `Se detectaron ${listaAlertas.length} problemas en ${zona}`,
+                    detalles: listaAlertas
                 });
             }
+            
+            let respuestaParaSensor = {
+                status: resultado.estado,
+                accion: "NINGUNA"
+            };
 
-            // 3. Todo bien
-            return res.status(200).json({ status: "OK", data: [] });
+            if (resultado.estado === 'COLAPSO') {
+                console.log("🚨 ORDENANDO AL SENSOR ACTIVAR ALARMA FÍSICA");
+                respuestaParaSensor.accion = "ACTIVAR_ALARMA";
+            }
+
+            return res.status(200).json(respuestaParaSensor);
 
         } catch (error) {
             console.error("Error en controlador:", error);
